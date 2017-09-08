@@ -1,0 +1,218 @@
+diff -Naur libressl-2.5.5/crypto/rsa/rsa_pk1.c libressl-2.5.5-work/crypto/rsa/rsa_pk1.c
+--- libressl-2.5.5/crypto/rsa/rsa_pk1.c	2017-07-09 19:59:47.000000000 +0900
++++ libressl-2.5.5-work/crypto/rsa/rsa_pk1.c	2017-09-05 08:58:34.903374695 +0900
+@@ -159,12 +159,15 @@
+ 
+ 	/* pad out with non-zero random data */
+ 	j = tlen - 3 - flen;
+-
+-	arc4random_buf(p, j);
++        
++	// arc4random_buf(p, j);
+ 	for (i = 0; i < j; i++) {
++            *(p++) = 1;
++/*
+ 		while (*p == '\0')
+ 			arc4random_buf(p, 1);
+ 		p++;
++*/
+ 	}
+ 
+ 	*(p++) = '\0';
+diff -Naur libressl-2.5.5/ssl/ssl_clnt.c libressl-2.5.5-work/ssl/ssl_clnt.c
+--- libressl-2.5.5/ssl/ssl_clnt.c	2017-07-09 19:59:47.000000000 +0900
++++ libressl-2.5.5-work/ssl/ssl_clnt.c	2017-09-08 13:39:58.848430557 +0900
+@@ -170,6 +170,9 @@
+ #endif
+ 
+ #include "bytestring.h"
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <fcntl.h>
+ 
+ static int ca_dn_cmp(const X509_NAME * const *a, const X509_NAME * const *b);
+ 
+@@ -614,8 +617,14 @@
+ 		 * HelloVerifyRequest, we must retain the original client
+ 		 * random value.
+ 		 */
+-		if (!SSL_IS_DTLS(s) || D1I(s)->send_cookie == 0)
+-			arc4random_buf(s->s3->client_random, SSL3_RANDOM_SIZE);
++		if (!SSL_IS_DTLS(s) || D1I(s)->send_cookie == 0) {
++                    int i;
++                    unsigned char c = 0;
++                    for (i = 0; i < SSL3_RANDOM_SIZE; i++)
++                        s->s3->client_random[i] = ++c;
++//			arc4random_buf(s->s3->client_random, SSL3_RANDOM_SIZE);
++                }
++                
+ 
+ 		d = p = ssl3_handshake_msg_start(s, SSL3_MT_CLIENT_HELLO);
+ 
+@@ -1890,6 +1899,9 @@
+ ssl3_send_client_kex_rsa(SSL *s, SESS_CERT *sess_cert, CBB *cbb)
+ {
+ 	unsigned char pms[SSL_MAX_MASTER_KEY_LENGTH];
++	static unsigned char saved_pms[8192];
++        static int saved_pms_len = 0;
++        
+ 	unsigned char *enc_pms = NULL;
+ 	EVP_PKEY *pkey = NULL;
+ 	int ret = -1;
+@@ -1909,15 +1921,62 @@
+ 
+ 	pms[0] = s->client_version >> 8;
+ 	pms[1] = s->client_version & 0xff;
+-	arc4random_buf(&pms[2], sizeof(pms) - 2);
+-
++	// arc4random_buf(&pms[2], sizeof(pms) - 2);
++        {
++            int i = 0;
++            unsigned char c = 0;
++            for (i = 0; i < sizeof(pms)-2; i++) {
++                pms[2+i] = ++c;
++            }
++            
++        }
++        
+ 	if ((enc_pms = malloc(RSA_size(pkey->pkey.rsa))) == NULL) {
+ 		SSLerror(s, ERR_R_MALLOC_FAILURE);
+ 		goto err;
+ 	}
+-
+-	enc_len = RSA_public_encrypt(sizeof(pms), pms, enc_pms, pkey->pkey.rsa,
+-	    RSA_PKCS1_PADDING);
++        // XXX: TODO
++#if 1
++        const char *filename="/tmp/enc_pms.dat";
++        
++        if (saved_pms_len == 0) {
++            int fd = open(filename, O_RDONLY);
++            int32_t n = 0;
++            
++            if (fd >= 0) {
++                read(fd, &n, 4);
++                if (n > 8192) {
++                    SSLerror(s, SSL_R_BAD_RSA_ENCRYPT);
++                    close(fd);
++                    goto err;
++                }
++                
++                read(fd, saved_pms, n);
++                close(fd);
++                saved_pms_len = n;
++                enc_len = saved_pms_len;
++                memcpy(enc_pms, saved_pms, enc_len);
++            } else {
++                enc_len = RSA_public_encrypt(sizeof(pms), pms, enc_pms, pkey->pkey.rsa,
++                                             RSA_PKCS1_PADDING);
++                int fd = open(filename, O_WRONLY|O_CREAT, S_IRWXU);
++                int32_t n = enc_len;
++                if (fd >= 0) {
++                    write(fd, &n, 4);
++                    write(fd, enc_pms, n);
++                    close(fd);
++                }
++            }
++        } else {
++            enc_len = saved_pms_len;
++            memcpy(enc_pms, saved_pms, enc_len);
++        }
++        
++#endif
++#if 0
++                enc_len = RSA_public_encrypt(sizeof(pms), pms, enc_pms, pkey->pkey.rsa,
++                                             RSA_PKCS1_PADDING);
++#endif
+ 	if (enc_len <= 0) {
+ 		SSLerror(s, SSL_R_BAD_RSA_ENCRYPT);
+ 		goto err;
+diff -Naur libressl-2.5.5/ssl/ssl_srvr.c libressl-2.5.5-work/ssl/ssl_srvr.c
+--- libressl-2.5.5/ssl/ssl_srvr.c	2017-07-09 19:59:47.000000000 +0900
++++ libressl-2.5.5-work/ssl/ssl_srvr.c	2017-09-08 13:39:27.661431115 +0900
+@@ -166,6 +166,9 @@
+ #include <openssl/x509.h>
+ 
+ #include "bytestring.h"
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <fcntl.h>
+ 
+ int
+ ssl3_accept(SSL *s)
+@@ -966,7 +969,14 @@
+ 	 * server_random before calling tls_session_secret_cb in order to allow
+ 	 * SessionTicket processing to use it in key derivation.
+ 	 */
+-	arc4random_buf(s->s3->server_random, SSL3_RANDOM_SIZE);
++	// arc4random_buf(s->s3->server_random, SSL3_RANDOM_SIZE);
++        {
++            int i;
++            unsigned char c = 0;
++            for (i = 0; i < SSL3_RANDOM_SIZE; i++)
++                s->s3->server_random[i] = ++c;
++        }
++        
+ 
+ 	if (!s->internal->hit && s->internal->tls_session_secret_cb) {
+ 		SSL_CIPHER *pref_cipher = NULL;
+@@ -1677,6 +1687,8 @@
+ ssl3_get_client_kex_rsa(SSL *s, unsigned char *p, long n)
+ {
+ 	unsigned char fakekey[SSL_MAX_MASTER_KEY_LENGTH];
++	static unsigned char saved_pms[8192];
++        static int saved_pms_len = 0;
+ 	unsigned char *d;
+ 	RSA *rsa = NULL;
+ 	EVP_PKEY *pkey = NULL;
+@@ -1706,8 +1718,48 @@
+ 	} else
+ 		n = i;
+ 
+-	i = RSA_private_decrypt((int)n, p, p, rsa, RSA_PKCS1_PADDING);
+-
++        // XXX: TODO: statically generate p
++        const char *filename="/tmp/saved_pms.dat";
++        if (saved_pms_len == 0) {
++            int fd = open(filename, O_RDONLY);
++            int32_t k = 0;
++            if (fd >= 0) {
++                read(fd, &k, 4);
++                if (k > 8192) {
++                    SSLerror(s, SSL_R_BAD_RSA_DECRYPT);
++                    close(fd);
++                    goto err;
++                }
++                
++                read(fd, saved_pms, n);
++                close(fd);
++                saved_pms_len = k;
++                i = saved_pms_len;
++                if (i != SSL_MAX_MASTER_KEY_LENGTH) {
++                    goto failsafe;
++                }
++
++                memcpy(p, saved_pms, i);
++            } else {
++            failsafe:
++                i = RSA_private_decrypt((int)n, p, p, rsa, RSA_PKCS1_PADDING);
++                if (i != SSL_MAX_MASTER_KEY_LENGTH) {
++                    goto bailout;
++                }
++                int fd = open(filename, O_WRONLY|O_CREAT, S_IRWXU);
++                k = i;
++
++                if (fd >= 0) {
++                    write(fd, &k, 4);
++                    write(fd, p, k);
++                    close(fd);
++                }
++            }
++        } else {
++            i = saved_pms_len;
++            memcpy(p, saved_pms, i);
++        }
++bailout:
+ 	ERR_clear_error();
+ 
+ 	al = -1;

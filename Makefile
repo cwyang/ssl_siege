@@ -1,9 +1,9 @@
 TARGET_EXEC ?= sslsiege
 
-CUSTOM_SSL_DIR = /home/cwyang/local/lib
+CUSTOM_SSL_DIR = ./ssl/libressl-2.5.5/local/lib
 
 BUILD_DIR ?= ./build
-SRC_DIRS ?= .
+SRC_DIRS ?= ./src
 
 CC = g++
 
@@ -36,7 +36,10 @@ $(BUILD_DIR)/%.cpp.o: %.cpp
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
 
-.PHONY: clean
+.PHONY: clean $(CUSTOM_SSL_DIR)
+
+$(CUSTOM_SSL_DIR):
+	@echo "first, make custom ssl library by (cd ssl; sh run-me.sh)"
 
 clean:
 	$(RM) -r $(BUILD_DIR)
